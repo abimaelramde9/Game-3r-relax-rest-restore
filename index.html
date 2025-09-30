@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow Bubbles — Relax (PWA)</title>
+<meta name="theme-color" content="#6ea8ff">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<style>
+  :root{
+    --bg1:#0b1020; --bg2:#1d2b50; --ink:#ecf1ff; --muted:#9fb0ff; --ring:rgba(255,255,255,.15);
+    --accent:#6ea8ff; --radius:16px; --shadow:0 12px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0; background:linear-gradient(to top,var(--bg1),var(--bg2)); color:var(--ink); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Arial,sans-serif; overflow:hidden}
+  .ui{position:fixed; left:50%; top:12px; transform:translateX(-50%); display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 10px; background:rgba(18,24,52,.45); border:1px solid var(--ring); border-radius:14px; backdrop-filter: blur(8px); box-shadow:var(--shadow)}
+  button, input[type="range"]{color:var(--ink); background:#1b2350; border:1px solid var(--ring); border-radius:12px; padding:8px 10px; font:inherit; cursor:pointer}
+  button.primary{background:linear-gradient(180deg,var(--accent),#2b6cff); border:0; color:#fff}
+  label{font-size:12px; color:var(--muted)}
+  #breath{padding:6px 10px; border-radius:999px; border:1px solid var(--ring); background:#1b2350; color:#ecf1ff}
+  #hint{position:fixed; bottom:12px; left:50%; transform:translateX(-50%); color:#fff; font:14px system-ui; opacity:.7}
+  canvas{display:block; width:100vw; height:100vh}
+</style>
+</head>
+<body>
+  <div class="ui" role="group" aria-label="Contrôles">
+    <button id="spawn" class="primary">Plus de bulles</button>
+    <button id="clear">Nettoyer</button>
+    <select id="breath" aria-label="Mode respiration">
+      <option value="off">Respiration : Off</option>
+      <option value="4-4-4">Carrée 4‑4‑4</option>
+      <option value="4-7-8">4‑7‑8</option>
+      <option value="5-5">Cohérence 5‑5</option>
+    </select>
+    <label>Son <input id="sound" type="checkbox" checked></label>
+    <label>Ambiance <input id="ambient" type="checkbox"></label>
+    <label>Volume <input id="vol" type="range" min="0" max="1" step="0.01" value="0.4"></label>
+  </div>
+  <div id="hint">🌸 Clique / touche les bulles pour les éclater • Tape Espace pour faire apparaître des bulles</div>
+  <canvas id="cvs" aria-label="Scène relaxante avec bulles"></canvas>
+
+<script>
+// --- PWA registration ---
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+}
+
+// --- Canvas setup ---
+const cvs = document.getElementById('cvs'), ctx = cvs.getContext('2d');
+function resize(){ cvs.width = innerWidth; cvs.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+// --- Audio (WebAudio, aucun fichier requis) ---
+let actx, popOsc, ambientOsc, gainPop, gainAmbient;
+function ensureAudio(){
+  if(actx) return;
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  gainPop = actx.createGain(); gainPop.gain.value = 0.4; gainPop.connect(actx.destination);
+  gainAmbient = actx.createGain(); gainAmbient.gain.value = 0.0; gainAmbient.connect(actx.destination);
+  ambientOsc = actx.createOscillator(); ambientOsc.type = 'sine'; ambientOsc.frequency.value = 174; // fréquence relax
+  ambientOsc.connect(gainAmbient); ambientOsc.start();
+}
+function popSound(){
+  if(!document.getElementById('sound').checked) return;
+  ensureAudio();
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type='sine'; o.frequency.setValueAtTime(600, actx.currentTime);
+  o.frequency.exponentialRampToValueAtTime(1200, actx.currentTime + 0.08);
+  g.gain.value = document.getElementById('vol').value; g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.12);
+  o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.13);
+}
+function toggleAmbient(on){
+  ensureAudio();
+  gainAmbient.gain.cancelScheduledValues(actx.currentTime);
+  gainAmbient.gain.linearRampToValueAtTime(on ? +document.getElementById('vol').value * 0.5 : 0.0, actx.currentTime + 0.3);
+  if(on){ // gentle wobble
+    let t0 = actx.currentTime;
+    ambientOsc.frequency.cancelScheduledValues(t0);
+    ambientOsc.frequency.setValueAtTime(174, t0);
+    ambientOsc.frequency.linearRampToValueAtTime(196, t0 + 8);
+    ambientOsc.frequency.linearRampToValueAtTime(174, t0 + 16);
+  }
+}
+document.getElementById('ambient').addEventListener('change', e => toggleAmbient(e.target.checked));
+document.getElementById('vol').addEventListener('input', e => {
+  if(gainPop) gainPop.gain.value = +e.target.value;
+  if(gainAmbient && document.getElementById('ambient').checked) gainAmbient.gain.value = +e.target.value * 0.5;
+});
+
+// --- Bubbles ---
+class Bubble{
+  constructor(){
+    this.reset();
+  }
+  reset(){
+    this.x = Math.random() * cvs.width;
+    this.y = cvs.height + 60;
+    this.r = 16 + Math.random()*36;
+    this.speed = 20 + Math.random()*50;
+    this.hue = Math.random()*360;
+    this.alpha = 0.65;
+    this.wobble = Math.random()*Math.PI*2;
+  }
+  update(dt){
+    this.y -= this.speed * dt;
+    this.x += Math.sin((performance.now()/1000)+this.wobble) * 15 * dt;
+    if(this.y + this.r < -20) this.reset();
+  }
+  draw(){
+    const grad = ctx.createRadialGradient(this.x- this.r*0.3, this.y- this.r*0.3, this.r*0.1, this.x, this.y, this.r);
+    grad.addColorStop(0, `hsla(${this.hue},70%,80%,${this.alpha})`);
+    grad.addColorStop(1, `hsla(${this.hue},70%,60%,${this.alpha*0.6})`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+    ctx.fill();
+    // highlight
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(this.x - this.r*0.25, this.y - this.r*0.25, this.r*0.2, 0, Math.PI*2);
+    ctx.stroke();
+  }
+  hit(px,py){
+    const dx=px-this.x, dy=py-this.y;
+    return dx*dx+dy*dy <= this.r*this.r;
+  }
+}
+let bubbles = Array.from({length:28}, () => new Bubble());
+function moreBubbles(n=10){ for(let i=0;i<n;i++) bubbles.push(new Bubble()); }
+document.getElementById('spawn').addEventListener('click', ()=>moreBubbles(10));
+document.getElementById('clear').addEventListener('click', ()=>{ bubbles = []; });
+
+// --- Breathing guide ---
+/* Modes:
+   - "4-4-4" : inspire 4s, bloque 4s, expire 4s
+   - "4-7-8" : inspire 4s, bloque 7s, expire 8s
+   - "5-5"   : inspire 5s, expire 5s (cohérence cardiaque ~6/min)
+*/
+const breathSel = document.getElementById('breath');
+let breathMode = 'off', breathT = 0, breathPhase = 0;
+breathSel.addEventListener('change', e=>{ breathMode = e.target.value; breathT = 0; breathPhase = 0; });
+
+function breathing(dt){
+  if(breathMode==='off') return null;
+  const m = {
+    '4-4-4': [4,4,4],
+    '4-7-8': [4,7,8],
+    '5-5':   [5,0,5],
+  }[breathMode];
+  const [inh, hold, ex] = m;
+  const phases = hold>0 ? ['Inspire','Garde','Expire'] : ['Inspire','Expire'];
+  const times  = hold>0 ? [inh, hold, ex] : [inh, ex];
+  breathT += dt;
+  if(breathT >= times[breathPhase]){
+    breathT = 0; breathPhase = (breathPhase+1) % times.length;
+  }
+  return phases[breathPhase];
+}
+
+// --- Loop ---
+let last = 0;
+function loop(t){
+  const dt = Math.min(0.05, (t - last)/1000); last = t;
+  // update
+  bubbles.forEach(b => b.update(dt));
+  const phase = breathing(dt);
+  // draw
+  ctx.clearRect(0,0,cvs.width,cvs.height);
+  bubbles.forEach(b => b.draw());
+  if(phase){
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.font = '600 24px system-ui';
+    ctx.fillText(phase, 18, 36);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// --- Interactions ---
+function popAt(x,y){
+  for(const b of bubbles){
+    if(b.hit(x,y)){
+      // ripple
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r*1.35, 0, Math.PI*2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 3; ctx.stroke();
+      popSound();
+      b.reset();
+      break;
+    }
+  }
+}
+cvs.addEventListener('click', e => { ensureAudio(); popAt(e.clientX, e.clientY); });
+cvs.addEventListener('touchstart', e => { ensureAudio(); for(const t of e.touches) popAt(t.clientX,t.clientY); });
+
+// --- Keyboard: space to spawn ---
+addEventListener('keydown', e => { if(e.code==='Space'){ e.preventDefault(); moreBubbles(8); } });
+</script>
+</body>
+</html>
